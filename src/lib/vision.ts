@@ -1,0 +1,13 @@
+export type Point={x:number;y:number};
+export type Quad=[Point,Point,Point,Point];
+export type Rect={x:number;y:number;width:number;height:number;score:number};
+const gray=(d:Uint8ClampedArray,i:number)=>.299*d[i]+.587*d[i+1]+.114*d[i+2];
+export function detectBoardQuad(im:ImageData):Quad|null{
+ const {width:w,height:h,data:d}=im; if(w<20||h<20)return null;
+ const step=Math.max(2,Math.floor(Math.min(w,h)/600)); let minX=w,minY=h,maxX=0,maxY=0,hits=0;
+ for(let y=step;y<h-step;y+=step)for(let x=step;x<w-step;x+=step){const i=(y*w+x)*4;const gx=Math.abs(gray(d,i+step*4)-gray(d,i-step*4));const gy=Math.abs(gray(d,i+step*w*4)-gray(d,i-step*w*4));if(gx+gy>120){minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);hits++}}
+ if(hits<50||maxX-minX<w*.35||maxY-minY<h*.35)return null; const pad=Math.round(Math.min(w,h)*.015);
+ return[{x:Math.max(0,minX-pad),y:Math.max(0,minY-pad)},{x:Math.min(w-1,maxX+pad),y:Math.max(0,minY-pad)},{x:Math.min(w-1,maxX+pad),y:Math.min(h-1,maxY+pad)},{x:Math.max(0,minX-pad),y:Math.min(h-1,maxY+pad)}];
+}
+export function cropQuadToCanvas(source:HTMLCanvasElement,q:Quad){const xs=q.map(p=>p.x),ys=q.map(p=>p.y);const x=Math.floor(Math.min(...xs)),y=Math.floor(Math.min(...ys)),rw=Math.ceil(Math.max(...xs)-x),rh=Math.ceil(Math.max(...ys)-y);const out=document.createElement('canvas');out.width=rw;out.height=rh;out.getContext('2d')!.drawImage(source,x,y,rw,rh,0,0,rw,rh);return out}
+export function detectMagnetRects(im:ImageData):Rect[]{const{width:w,height:h,data:d}=im;const cell=Math.max(8,Math.floor(Math.min(w,h)/100));const cols=Math.ceil(w/cell),rows=Math.ceil(h/cell);const active=Array.from({length:rows},()=>Array(cols).fill(false));for(let cy=0;cy<rows;cy++)for(let cx=0;cx<cols;cx++){let dark=0,n=0;for(let y=cy*cell;y<Math.min(h,(cy+1)*cell);y+=2)for(let x=cx*cell;x<Math.min(w,(cx+1)*cell);x+=2){const i=(y*w+x)*4;if(gray(d,i)<105)dark++;n++}active[cy][cx]=n>0&&dark/n>.035}const seen=active.map(r=>r.map(()=>false));const out:Rect[]=[];for(let sy=0;sy<rows;sy++)for(let sx=0;sx<cols;sx++){if(!active[sy][sx]||seen[sy][sx])continue;const stack=[[sx,sy]],pts:number[][]=[];seen[sy][sx]=true;while(stack.length){const [x,y]=stack.pop()!;pts.push([x,y]);for(const[dx,dy]of[[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,ny=y+dy;if(nx>=0&&ny>=0&&nx<cols&&ny<rows&&active[ny][nx]&&!seen[ny][nx]){seen[ny][nx]=true;stack.push([nx,ny])}}}const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);const x=Math.min(...xs)*cell,y=Math.min(...ys)*cell,rw=(Math.max(...xs)-Math.min(...xs)+1)*cell,rh=(Math.max(...ys)-Math.min(...ys)+1)*cell;const ar=rw/Math.max(1,rh);if(rw>w*.035&&rw<w*.45&&rh>h*.012&&rh<h*.14&&ar>1.7&&ar<12)out.push({x,y,width:rw,height:rh,score:Math.min(1,pts.length/18)})}return out}

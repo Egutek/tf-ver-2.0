@@ -1,0 +1,2 @@
+import{describe,it,expect}from'vitest';import{reviewStats,canStartShift}from'./board';
+describe('review gate',()=>{it('blocks uncertain OCR',()=>{const s=reviewStats([{raw:'X',area:'TRANSPORT',confidence:.4,warning:'low'}],[]);expect(canStartShift(s)).toBe(false)});it('allows fully verified board',()=>{const s=reviewStats([{raw:'A',matched:'A',area:'TRANSPORT',confidence:1}],[]);expect(canStartShift(s)).toBe(true)});it('blocks unknown area',()=>{const s=reviewStats([{raw:'A',matched:'A',area:'UNKNOWN',confidence:1}],[]);expect(canStartShift(s)).toBe(false)})})
