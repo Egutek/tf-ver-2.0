@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   cropROI,
+  chooseOCRPass,
   upscaleCanvas,
   enhanceLocalContrast,
   filterMagnetCandidates,
@@ -67,6 +68,26 @@ function drawRect(
 }
 
 describe('magnetOcr', () => {
+  describe('chooseOCRPass', () => {
+    it('uses one pass for high-confidence OCR', () => {
+      expect(chooseOCRPass({ text: 'NOVAK JAN', confidence: 0.92 })).toMatchObject({ passCount: 1, confidence: 0.92 });
+    });
+
+    it('combines agreeing passes after diacritic normalization', () => {
+      expect(chooseOCRPass(
+        { text: 'NOVAK JAN', confidence: 0.6 },
+        { text: 'NOVÁK JAN', confidence: 0.8 }
+      )).toMatchObject({ rawText: 'NOVÁK JAN', confidence: Math.sqrt(0.48), passCount: 2 });
+    });
+
+    it('caps disagreeing passes below confirmation confidence', () => {
+      expect(chooseOCRPass(
+        { text: 'NOVAK JAN', confidence: 0.75 },
+        { text: 'SVOBODA PETR', confidence: 0.9 }
+      )).toMatchObject({ rawText: 'SVOBODA PETR', confidence: 0.765, warning: 'OCR passes disagree', passCount: 2 });
+    });
+  });
+
   describe('cropROI', () => {
     it('should crop a region with padding', () => {
       const canvas = createTestCanvas(400, 300);
@@ -229,7 +250,7 @@ describe('magnetOcr', () => {
     });
 
     it('should handle non-array input', () => {
-      const filtered = filterMagnetCandidates(null as any);
+      const filtered = filterMagnetCandidates(null);
 
       expect(filtered).toHaveLength(0);
     });

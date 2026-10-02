@@ -1,5 +1,10 @@
-import { createWorker } from 'tesseract.js';
-import type { Rect } from './vision';
+import type { Rect } from '../types';
+import { adaptiveThreshold, normalizeGrayscale } from './imageQuality';
+import { filterMagnetCandidates } from './vision';
+import { combineConfidences } from './confidence';
+import { getOCRWorker, type OCRWorker } from './ocrWorker';
+
+export type { Rect } from '../types';
 
 /**
  * Result of OCR processing on a single magnet
@@ -8,12 +13,10 @@ export interface MagnetOCR {
   id: string;
   rawText: string;
   confidence: number;
-  rect: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
+  rect: Rect;
+  warning?: string;
+  passCount: number;
+  elapsedMs: number;
 }
 
 /**
@@ -43,6 +46,34 @@ export const DEFAULT_MAGNET_OCR_CONFIG: MagnetOCRConfig = {
   enhanceContrast: true,
 };
 
+export type OCRPass = { text: string; confidence: number };
+export type OCRPassDecision = { rawText: string; confidence: number; warning?: string; passCount: number };
+
+function normalizeOCRText(text: string): string {
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+
+export function chooseOCRPass(first: OCRPass, second?: OCRPass): OCRPassDecision {
+  if (!second) return { rawText: first.text, confidence: first.confidence, passCount: 1 };
+
+  const firstText = normalizeOCRText(first.text);
+  const secondText = normalizeOCRText(second.text);
+  if (firstText && firstText === secondText) {
+    return {
+      rawText: second.confidence > first.confidence ? second.text : first.text,
+      confidence: combineConfidences(first.confidence, second.confidence),
+      passCount: 2,
+    };
+  }
+
+  return {
+    rawText: second.confidence > first.confidence ? second.text : first.text,
+    confidence: Math.min(0.79, Math.max(first.confidence, second.confidence) * 0.85),
+    warning: 'OCR passes disagree',
+    passCount: 2,
+  };
+}
+
 /**
  * Crop a region of interest from canvas with padding
  */
@@ -51,21 +82,24 @@ export function cropROI(
   rect: Rect,
   padding: number
 ): HTMLCanvasElement {
-  const ctx = source.getContext('2d');
-  if (!ctx) throw new Error('Could not get canvas context');
-
-  const x = Math.max(0, rect.x - padding);
-  const y = Math.max(0, rect.y - padding);
-  const w = Math.min(source.width - x, rect.width + padding * 2);
-  const h = Math.min(source.height - y, rect.height + padding * 2);
+  if (![rect.x, rect.y, rect.width, rect.height, padding].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0 || padding < 0) {
+    throw new RangeError('Invalid OCR region');
+  }
+  const x = Math.max(0, Math.floor(rect.x - padding));
+  const y = Math.max(0, Math.floor(rect.y - padding));
+  const right = Math.min(source.width, Math.ceil(rect.x + rect.width + padding));
+  const bottom = Math.min(source.height, Math.ceil(rect.y + rect.height + padding));
+  const width = right - x;
+  const height = bottom - y;
+  if (width <= 0 || height <= 0) throw new RangeError('OCR region is outside the source image');
 
   const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = width;
+  canvas.height = height;
   const dstCtx = canvas.getContext('2d');
   if (!dstCtx) throw new Error('Could not get destination canvas context');
 
-  dstCtx.drawImage(source, x, y, w, h, 0, 0, w, h);
+  dstCtx.drawImage(source, x, y, width, height, 0, 0, width, height);
   return canvas;
 }
 
@@ -76,6 +110,7 @@ export function upscaleCanvas(
   canvas: HTMLCanvasElement,
   factor: number
 ): HTMLCanvasElement {
+  if (!Number.isFinite(factor) || factor > 4) throw new RangeError('Upscale factor must be between 1 and 4');
   if (factor <= 1) return canvas;
 
   const upscaled = document.createElement('canvas');
@@ -92,62 +127,19 @@ export function upscaleCanvas(
   return upscaled;
 }
 
-/**
- * Apply local contrast enhancement using CLAHE-like approach
- * Uses a simple histogram equalization on image blocks
- */
 export function enhanceLocalContrast(canvas: HTMLCanvasElement): HTMLCanvasElement {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imageData.data;
-
-  // Block size for local contrast enhancement
-  const blockSize = Math.max(16, Math.floor(Math.min(canvas.width, canvas.height) / 16));
-  const stride = blockSize / 2; // 50% overlap
-
-  // Process each block
-  for (let by = 0; by < canvas.height; by += stride) {
-    for (let bx = 0; bx < canvas.width; bx += stride) {
-      const x0 = bx;
-      const y0 = by;
-      const x1 = Math.min(bx + blockSize, canvas.width);
-      const y1 = Math.min(by + blockSize, canvas.height);
-
-      // Calculate histogram for block
-      const hist = new Uint32Array(256);
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const idx = (y * canvas.width + x) * 4;
-          const gray = Math.round(0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]);
-          hist[gray]++;
-        }
-      }
-
-      // Calculate cumulative distribution
-      const cdf = new Uint8Array(256);
-      let sum = 0;
-      const pixels = (x1 - x0) * (y1 - y0);
-      for (let i = 0; i < 256; i++) {
-        sum += hist[i];
-        cdf[i] = Math.round((sum * 255) / pixels);
-      }
-
-      // Apply transformation
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const idx = (y * canvas.width + x) * 4;
-          const gray = Math.round(0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]);
-          const enhanced = cdf[gray];
-          data[idx] = enhanced;
-          data[idx + 1] = enhanced;
-          data[idx + 2] = enhanced;
-        }
-      }
-    }
+  const grayscale = normalizeGrayscale(imageData, false);
+  for (let pixel = 0; pixel < grayscale.length; pixel += 1) {
+    const index = pixel * 4;
+    imageData.data[index] = grayscale[pixel];
+    imageData.data[index + 1] = grayscale[pixel];
+    imageData.data[index + 2] = grayscale[pixel];
+    imageData.data[index + 3] = 255;
   }
-
   ctx.putImageData(imageData, 0, 0);
   return canvas;
 }
@@ -160,8 +152,9 @@ export async function processMagnetROI(
   rect: Rect,
   magnetId: string,
   config: MagnetOCRConfig,
-  worker: any
-): Promise<MagnetOCR | null> {
+  worker: OCRWorker
+): Promise<MagnetOCR> {
+  const startedAt = performance.now();
   try {
     // Step 1: Crop ROI with padding
     const cropped = cropROI(canvas, rect, config.padding);
@@ -175,29 +168,69 @@ export async function processMagnetROI(
       processed = enhanceLocalContrast(upscaled);
     }
 
-    // Step 4: Run Tesseract OCR
-    const result = await worker.recognize(processed);
-    const confidence = result.data.confidence / 100;
+    const firstPass = await worker.recognize(processed);
+    const firstOCRPass = {
+      text: firstPass.data.text.trim(),
+      confidence: (firstPass.data.confidence ?? 0) / 100,
+    };
+    let decision = chooseOCRPass(firstOCRPass, undefined);
 
-    // Filter by minimum confidence
-    if (confidence < config.minConfidence) {
-      return null;
+    if (decision.confidence < 0.8) {
+      const sourceContext = processed.getContext('2d', { willReadFrequently: true });
+      if (!sourceContext) throw new Error('Could not read ROI for adaptive OCR pass');
+      const sourcePixels = sourceContext.getImageData(0, 0, processed.width, processed.height);
+      const grayscale = normalizeGrayscale(sourcePixels, false);
+      const binary = adaptiveThreshold(grayscale, processed.width, processed.height);
+      const thresholdCanvas = document.createElement('canvas');
+      thresholdCanvas.width = processed.width;
+      thresholdCanvas.height = processed.height;
+      const thresholdContext = thresholdCanvas.getContext('2d');
+      if (!thresholdContext) throw new Error('Could not create adaptive OCR canvas');
+      const thresholdPixels = thresholdContext.createImageData(processed.width, processed.height);
+      for (let pixel = 0; pixel < binary.length; pixel += 1) {
+        const index = pixel * 4;
+        thresholdPixels.data[index] = binary[pixel];
+        thresholdPixels.data[index + 1] = binary[pixel];
+        thresholdPixels.data[index + 2] = binary[pixel];
+        thresholdPixels.data[index + 3] = 255;
+      }
+      thresholdContext.putImageData(thresholdPixels, 0, 0);
+
+      const secondPass = await worker.recognize(thresholdCanvas);
+      decision = chooseOCRPass(firstOCRPass, {
+        text: secondPass.data.text.trim(),
+        confidence: (secondPass.data.confidence ?? 0) / 100,
+      });
     }
+
+    if (decision.confidence < config.minConfidence) decision.warning ??= 'Below minimum OCR confidence';
 
     return {
       id: magnetId,
-      rawText: result.data.text.trim(),
-      confidence,
+      rawText: decision.rawText,
+      confidence: decision.confidence,
+      warning: decision.warning,
+      passCount: decision.passCount,
+      elapsedMs: performance.now() - startedAt,
       rect: {
         x: rect.x,
         y: rect.y,
         width: rect.width,
         height: rect.height,
+        score: rect.score,
       },
     };
   } catch (error) {
     console.error(`Error processing magnet ${magnetId}:`, error);
-    return null;
+    return {
+      id: magnetId,
+      rawText: '',
+      confidence: 0,
+      warning: 'OCR processing failed',
+      passCount: 0,
+      elapsedMs: performance.now() - startedAt,
+      rect,
+    };
   }
 }
 
@@ -216,34 +249,27 @@ export async function readMagnets(
     return [];
   }
 
-  const worker = await createWorker(config.language, 1, {
-    logger: () => {
-      // Silent logger
-    },
-  });
+  const candidates = filterMagnetCandidates(magnetRects, 20, 0.45);
+  if (candidates.length === 0) return [];
+
+  const worker = await getOCRWorker(config.language);
 
   const results: MagnetOCR[] = [];
 
-  try {
-    for (let i = 0; i < magnetRects.length; i++) {
-      const rect = magnetRects[i];
-      const magnetId = `magnet-${i}`;
+  for (let i = 0; i < candidates.length; i++) {
+    const rect = candidates[i];
+    const magnetId = `magnet-${i}`;
 
-      if (progress) {
-        progress(i, magnetRects.length);
-      }
-
-      const result = await processMagnetROI(canvas, rect, magnetId, config, worker);
-      if (result) {
-        results.push(result);
-      }
+    if (progress) {
+      progress(i, candidates.length);
     }
-  } finally {
-    await worker.terminate();
+
+    const result = await processMagnetROI(canvas, rect, magnetId, config, worker);
+    results.push(result);
   }
 
   if (progress) {
-    progress(magnetRects.length, magnetRects.length);
+    progress(candidates.length, candidates.length);
   }
 
   return results;
@@ -252,17 +278,4 @@ export async function readMagnets(
 /**
  * Find magnet candidates that meet minimum size and confidence thresholds
  */
-export function filterMagnetCandidates(
-  rects: Rect[],
-  minSize: number = 20,
-  minScore: number = 0.5
-): Rect[] {
-  if (!Array.isArray(rects)) {
-    return [];
-  }
-
-  return rects.filter((rect) => {
-    const area = rect.width * rect.height;
-    return area >= minSize * minSize && rect.score >= minScore;
-  });
-}
+export { filterMagnetCandidates } from './vision';

@@ -10,15 +10,17 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "tesseract.js": "latest"
+    "tesseract.js": "latest",
+    "typescript": "latest",
+    "vite": "latest"
   },
   "devDependencies": {
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "canvas": "^3.2.3",
+    "jsdom": "^30.1.1",
     "vitest": "latest"
   }
 }

@@ -1,61 +1,36 @@
-/**
- * Confidence scoring system for OCR results
- * Provides consistent confidence levels across the pipeline
- */
+import { describe, expect, it } from 'vitest';
+import {
+  ConfidenceLevel,
+  boostConfidence,
+  combineConfidences,
+  getConfidenceLevel,
+  meetsMinimumConfidence,
+} from './confidence';
 
-export enum ConfidenceLevel {
-  HIGH = 'HIGH',
-  MEDIUM = 'MEDIUM',
-  LOW = 'LOW',
-}
+describe('confidence helpers', () => {
+  it('classifies confidence values into HIGH, MEDIUM, and LOW buckets', () => {
+    expect(getConfidenceLevel(1)).toBe(ConfidenceLevel.HIGH);
+    expect(getConfidenceLevel(0.9)).toBe(ConfidenceLevel.MEDIUM);
+    expect(getConfidenceLevel(0.75)).toBe(ConfidenceLevel.LOW);
+  });
 
-/**
- * Calculate confidence level from raw confidence value (0-1)
- * - HIGH: >= 0.95 (95%+)
- * - MEDIUM: 0.80-0.95 (80-95%)
- * - LOW: < 0.80 (<80%)
- */
-export function getConfidenceLevel(confidence: number): ConfidenceLevel {
-  if (confidence >= 0.95) return ConfidenceLevel.HIGH;
-  if (confidence >= 0.8) return ConfidenceLevel.MEDIUM;
-  return ConfidenceLevel.LOW;
-}
+  it('checks minimum confidence thresholds correctly', () => {
+    expect(meetsMinimumConfidence(0.95, ConfidenceLevel.HIGH)).toBe(true);
+    expect(meetsMinimumConfidence(0.94, ConfidenceLevel.HIGH)).toBe(false);
+    expect(meetsMinimumConfidence(0.8, ConfidenceLevel.MEDIUM)).toBe(true);
+    expect(meetsMinimumConfidence(0.79, ConfidenceLevel.MEDIUM)).toBe(false);
+    expect(meetsMinimumConfidence(0.2, ConfidenceLevel.LOW)).toBe(true);
+  });
 
-/**
- * Check if confidence meets minimum threshold
- */
-export function meetsMinimumConfidence(confidence: number, minimumLevel: ConfidenceLevel = ConfidenceLevel.MEDIUM): boolean {
-  switch (minimumLevel) {
-    case ConfidenceLevel.HIGH:
-      return confidence >= 0.95;
-    case ConfidenceLevel.MEDIUM:
-      return confidence >= 0.8;
-    case ConfidenceLevel.LOW:
-      return confidence >= 0.0;
-  }
-}
+  it('combines multiple confidence scores conservatively', () => {
+    expect(combineConfidences(0.9, 0.9)).toBeCloseTo(Math.sqrt(0.81), 10);
+    expect(combineConfidences(0.5, 0.5, 0.5)).toBeCloseTo(0.5, 10);
+    expect(combineConfidences()).toBe(0);
+  });
 
-/**
- * Combine multiple confidence scores (e.g., OCR + fuzzy match + area match)
- * Uses multiplicative averaging to be conservative
- */
-export function combineConfidences(...confidences: number[]): number {
-  const valid = confidences.filter((c) => typeof c === 'number' && !isNaN(c));
-  if (valid.length === 0) return 0;
-  const product = valid.reduce((a, b) => a * b, 1);
-  return Math.pow(product, 1 / valid.length);
-}
-
-/**
- * Boost confidence based on contextual factors
- * e.g., exact match, consistent placement, high contrast
- */
-export function boostConfidence(baseConfidence: number, factors: { exactMatch?: boolean; consistentPlacement?: boolean; highContrast?: boolean }): number {
-  let boosted = baseConfidence;
-
-  if (factors.exactMatch) boosted = Math.min(1, boosted * 1.1);
-  if (factors.consistentPlacement) boosted = Math.min(1, boosted * 1.08);
-  if (factors.highContrast) boosted = Math.min(1, boosted * 1.05);
-
-  return boosted;
-}
+  it('applies contextual boosts without exceeding 1.0', () => {
+    expect(boostConfidence(0.5, { exactMatch: true })).toBeCloseTo(0.55, 10);
+    expect(boostConfidence(0.9, { exactMatch: true, consistentPlacement: true })).toBe(1);
+    expect(boostConfidence(0.99, { highContrast: true })).toBe(1);
+  });
+});
