@@ -1,0 +1,57 @@
+export interface MagnetRect {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence: number;
+}
+
+function luminance(r: number, g: number, b: number): number {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+export function detectMagnetRects(image: ImageData, minSize = 20): MagnetRect[] {
+  const { width, height, data } = image;
+  const cell = Math.max(8, Math.floor(Math.min(width, height) / 80));
+  const cols = Math.ceil(width / cell);
+  const rows = Math.ceil(height / cell);
+
+  const candidates: MagnetRect[] = [];
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const x = gx * cell;
+      const y = gy * cell;
+      let darkPixels = 0;
+      let avgLum = 0;
+
+      for (let yy = y; yy < Math.min(y + cell, height); yy++) {
+        for (let xx = x; xx < Math.min(x + cell, width); xx++) {
+          const idx = (yy * width + xx) * 4;
+          const lum = luminance(data[idx], data[idx + 1], data[idx + 2]);
+          avgLum += lum;
+          if (lum < 120) darkPixels++;
+        }
+      }
+
+      const area = (Math.min(x + cell, width) - x) * (Math.min(y + cell, height) - y);
+      if (area < minSize * minSize) continue;
+
+      const occupancy = darkPixels / Math.max(1, area);
+      if (occupancy > 0.2) {
+        candidates.push({
+          id: `magnet-${gx}-${gy}`,
+          x,
+          y,
+          width: Math.min(cell * 2, width - x),
+          height: Math.min(cell * 2, height - y),
+          confidence: Math.min(1, occupancy * 2),
+        });
+      }
+    }
+  }
+
+  return candidates;
+}
+

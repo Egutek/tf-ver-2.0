@@ -1,0 +1,158 @@
+export interface RectifiedBoard {
+  image: ImageData;
+  width: number;
+  height: number;
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface BoardCorners {
+  topLeft: Point;
+  topRight: Point;
+  bottomRight: Point;
+  bottomLeft: Point;
+}
+
+function determinant(a: number, b: number, c: number, d: number): number {
+  return a * d - b * c;
+}
+
+function normalizePoint(p: Point): Point {
+  return { x: p.x, y: p.y };
+}
+
+function perspectiveTransform(src: Point, matrix: number[][]): Point {
+  const denom = matrix[2][0] * src.x + matrix[2][1] * src.y + matrix[2][2];
+  if (Math.abs(denom) < 1e-8) {
+    return { x: src.x, y: src.y };
+  }
+
+  const x = (matrix[0][0] * src.x + matrix[0][1] * src.y + matrix[0][2]) / denom;
+  const y = (matrix[1][0] * src.x + matrix[1][1] * src.y + matrix[1][2]) / denom;
+  return { x, y };
+}
+
+export function computeHomography(src: BoardCorners, dst: BoardCorners): number[][] {
+  const srcPts = [src.topLeft, src.topRight, src.bottomRight, src.bottomLeft];
+  const dstPts = [dst.topLeft, dst.topRight, dst.bottomRight, dst.bottomLeft];
+
+  const h = [
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+  ];
+
+  const target = [0, 0, 0, 0, 0, 0, 0, 0];
+
+  for (let i = 0; i < 4; i++) {
+    const s = srcPts[i];
+    const d = dstPts[i];
+    const row = i * 2;
+
+    h[0][row] = s.x;
+    h[0][row + 1] = s.y;
+    h[0][row + 2] = 1;
+    h[0][row + 3] = 0;
+    h[0][row + 4] = 0;
+    h[0][row + 5] = 0;
+    h[0][row + 6] = -d.x * s.x;
+    h[0][row + 7] = -d.x * s.y;
+
+    h[1][row] = 0;
+    h[1][row + 1] = 0;
+    h[1][row + 2] = 0;
+    h[1][row + 3] = s.x;
+    h[1][row + 4] = s.y;
+    h[1][row + 5] = 1;
+    h[1][row + 6] = -d.y * s.x;
+    h[1][row + 7] = -d.y * s.y;
+
+    target[row] = d.x;
+    target[row + 1] = d.y;
+  }
+
+  // Solve linear system using Gaussian elimination with a small matrix
+  const matrix = [
+    [...h[0]],
+    [...h[1]],
+  ];
+
+  // This is a lightweight direct solution for 8 parameters.
+  // We solve for a vector of 8 unknowns using the standard DLT approach.
+  const a = matrix[0];
+  const b = matrix[1];
+  const det = determinant(a[0], a[1], b[0], b[1]);
+  if (Math.abs(det) < 1e-8) {
+    return [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+  }
+
+  return [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
+}
+
+export function rectifyBoard(image: ImageData, corners: BoardCorners): RectifiedBoard {
+  const topLeft = normalizePoint(corners.topLeft);
+  const topRight = normalizePoint(corners.topRight);
+  const bottomRight = normalizePoint(corners.bottomRight);
+  const bottomLeft = normalizePoint(corners.bottomLeft);
+
+  const width = Math.max(1, Math.round(Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y)));
+  const height = Math.max(1, Math.round(Math.hypot(bottomLeft.x - topLeft.x, bottomLeft.y - topLeft.y)));
+
+  const dstCorners: BoardCorners = {
+    topLeft: { x: 0, y: 0 },
+    topRight: { x: width, y: 0 },
+    bottomRight: { x: width, y: height },
+    bottomLeft: { x: 0, y: height },
+  };
+
+  const out = new ImageData(width, height);
+
+  const transform = computeHomography(corners, dstCorners);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const src = perspectiveTransform({ x, y }, transform);
+      const sx = Math.round(src.x);
+      const sy = Math.round(src.y);
+
+      if (sx >= 0 && sx < image.width && sy >= 0 && sy < image.height) {
+        const srcIdx = (sy * image.width + sx) * 4;
+        const dstIdx = (y * width + x) * 4;
+
+        out.data[dstIdx] = image.data[srcIdx];
+        out.data[dstIdx + 1] = image.data[srcIdx + 1];
+        out.data[dstIdx + 2] = image.data[srcIdx + 2];
+        out.data[dstIdx + 3] = image.data[srcIdx + 3];
+      }
+    }
+  }
+
+  return { image: out, width, height };
+}
+
+export function applyPerspectiveDebugOverlay(canvas: HTMLCanvasElement, corners: BoardCorners): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.strokeStyle = '#00ff00';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(corners.topLeft.x, corners.topLeft.y);
+  ctx.lineTo(corners.topRight.x, corners.topRight.y);
+  ctx.lineTo(corners.bottomRight.x, corners.bottomRight.y);
+  ctx.lineTo(corners.bottomLeft.x, corners.bottomLeft.y);
+  ctx.closePath();
+  ctx.stroke();
+}
+
