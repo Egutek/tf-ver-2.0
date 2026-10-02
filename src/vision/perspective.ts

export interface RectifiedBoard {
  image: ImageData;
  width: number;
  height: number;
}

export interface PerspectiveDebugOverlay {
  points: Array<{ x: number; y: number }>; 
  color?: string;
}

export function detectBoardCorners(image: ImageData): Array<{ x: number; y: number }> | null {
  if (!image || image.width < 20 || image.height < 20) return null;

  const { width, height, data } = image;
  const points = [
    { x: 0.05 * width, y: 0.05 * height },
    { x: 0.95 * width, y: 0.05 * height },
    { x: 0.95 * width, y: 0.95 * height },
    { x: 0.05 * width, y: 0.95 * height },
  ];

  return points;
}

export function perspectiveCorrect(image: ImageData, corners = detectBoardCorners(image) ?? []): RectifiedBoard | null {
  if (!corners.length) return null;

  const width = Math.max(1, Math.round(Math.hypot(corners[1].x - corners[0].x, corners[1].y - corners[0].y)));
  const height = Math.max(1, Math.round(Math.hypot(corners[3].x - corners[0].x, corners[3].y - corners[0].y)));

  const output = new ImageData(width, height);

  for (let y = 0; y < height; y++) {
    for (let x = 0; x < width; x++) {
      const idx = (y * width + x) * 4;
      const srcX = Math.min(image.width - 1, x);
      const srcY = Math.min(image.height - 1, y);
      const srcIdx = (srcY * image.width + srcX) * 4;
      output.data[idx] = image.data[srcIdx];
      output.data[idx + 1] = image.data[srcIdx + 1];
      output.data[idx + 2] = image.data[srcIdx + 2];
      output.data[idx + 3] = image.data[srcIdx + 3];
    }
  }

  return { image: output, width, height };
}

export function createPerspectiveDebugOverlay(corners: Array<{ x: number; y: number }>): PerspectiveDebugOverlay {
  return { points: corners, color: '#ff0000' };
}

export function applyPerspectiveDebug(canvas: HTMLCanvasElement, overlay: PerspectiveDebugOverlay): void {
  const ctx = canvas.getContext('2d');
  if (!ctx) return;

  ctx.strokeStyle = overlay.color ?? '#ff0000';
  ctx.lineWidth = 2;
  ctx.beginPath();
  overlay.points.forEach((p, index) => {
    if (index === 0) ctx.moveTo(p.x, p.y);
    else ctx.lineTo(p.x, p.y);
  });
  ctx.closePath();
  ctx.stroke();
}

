@@ -1,0 +1,55 @@
+import { describe, it, expect } from 'vitest';
+import { assignMagnetsToAreas, findDuplicateOperators, getOperatorsNeedingReview, type AssignedOperator } from './areaAssignment';
+import type { AreaHeader } from '../vision/areaDetection';
+import type { MagnetOCR } from '../lib/magnetOcr';
+
+describe('areaAssignment', () => {
+  it('should assign magnets by X coordinate', () => {
+    const areas: AreaHeader[] = [
+      { name: 'TRANSPORT', x: 100, y: 0, left: 0, right: 200, confidence: 0.95 },
+      { name: 'OUTBOUND', x: 300, y: 0, left: 200, right: 400, confidence: 0.92 },
+    ];
+
+    const magnets: MagnetOCR[] = [
+      { id: 'm1', rawText: 'NOVAK', confidence: 0.9, rect: { x: 50, y: 20, width: 80, height: 40 } },
+      { id: 'm2', rawText: 'SVOBODA', confidence: 0.85, rect: { x: 250, y: 20, width: 80, height: 40 } },
+    ];
+
+    const assigned = assignMagnetsToAreas(areas, magnets);
+    expect(assigned).toHaveLength(2);
+    expect(assigned[0].area).toBe('TRANSPORT');
+    expect(assigned[1].area).toBe('OUTBOUND');
+  });
+
+  it('should flag low-confidence cases for review', () => {
+    const areas: AreaHeader[] = [
+      { name: 'TRANSPORT', x: 100, y: 0, left: 0, right: 200, confidence: 0.95 },
+    ];
+
+    const magnets: MagnetOCR[] = [
+      { id: 'm1', rawText: 'NOVAK', confidence: 0.5, rect: { x: 50, y: 20, width: 80, height: 40 } },
+    ];
+
+    const assigned = assignMagnetsToAreas(areas, magnets);
+    expect(assigned[0].needsReview).toBe(true);
+  });
+
+  it('should detect duplicates', () => {
+    const ops: AssignedOperator[] = [
+      { name: 'NOVAK', area: 'TRANSPORT', confidence: 0.9, rect: { x: 0, y: 0, width: 50, height: 40 }, needsReview: false },
+      { name: 'NOVAK', area: 'OUTBOUND', confidence: 0.88, rect: { x: 200, y: 0, width: 50, height: 40 }, needsReview: false },
+    ];
+
+    const duplicates = findDuplicateOperators(ops);
+    expect(duplicates).toContain('NOVAK');
+  });
+
+  it('should return operators needing review', () => {
+    const ops: AssignedOperator[] = [
+      { name: 'NOVAK', area: 'TRANSPORT', confidence: 0.95, rect: { x: 0, y: 0, width: 50, height: 40 }, needsReview: false },
+      { name: 'SVOBODA', area: 'OUTBOUND', confidence: 0.6, rect: { x: 200, y: 0, width: 50, height: 40 }, needsReview: true },
+    ];
+
+    expect(getOperatorsNeedingReview(ops)).toHaveLength(1);
+  });
+});

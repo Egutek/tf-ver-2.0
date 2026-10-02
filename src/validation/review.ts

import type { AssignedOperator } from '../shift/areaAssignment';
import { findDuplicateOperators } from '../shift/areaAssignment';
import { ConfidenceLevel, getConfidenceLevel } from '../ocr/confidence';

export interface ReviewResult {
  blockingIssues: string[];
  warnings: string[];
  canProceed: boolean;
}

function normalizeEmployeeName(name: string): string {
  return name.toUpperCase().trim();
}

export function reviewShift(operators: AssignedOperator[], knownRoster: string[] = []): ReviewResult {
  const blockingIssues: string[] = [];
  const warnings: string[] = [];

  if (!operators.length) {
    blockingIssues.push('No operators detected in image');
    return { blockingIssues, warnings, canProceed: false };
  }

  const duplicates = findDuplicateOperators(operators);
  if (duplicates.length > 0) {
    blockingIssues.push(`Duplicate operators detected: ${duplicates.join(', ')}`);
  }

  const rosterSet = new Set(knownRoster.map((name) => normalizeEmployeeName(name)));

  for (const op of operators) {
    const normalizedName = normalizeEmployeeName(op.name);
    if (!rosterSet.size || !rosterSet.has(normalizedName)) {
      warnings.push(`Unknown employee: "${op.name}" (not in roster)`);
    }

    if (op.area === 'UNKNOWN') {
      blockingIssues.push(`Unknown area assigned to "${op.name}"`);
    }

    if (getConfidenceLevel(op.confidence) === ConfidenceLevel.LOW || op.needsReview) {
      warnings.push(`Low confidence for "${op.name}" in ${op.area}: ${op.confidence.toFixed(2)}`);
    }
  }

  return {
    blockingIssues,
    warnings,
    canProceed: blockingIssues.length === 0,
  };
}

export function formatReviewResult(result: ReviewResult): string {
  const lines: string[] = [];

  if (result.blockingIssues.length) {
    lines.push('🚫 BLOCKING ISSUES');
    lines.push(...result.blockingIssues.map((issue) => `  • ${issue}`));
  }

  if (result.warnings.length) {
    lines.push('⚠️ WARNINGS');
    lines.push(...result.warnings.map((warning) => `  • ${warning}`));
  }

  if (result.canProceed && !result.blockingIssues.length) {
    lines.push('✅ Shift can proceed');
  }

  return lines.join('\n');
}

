@@ -1,0 +1,46 @@
+import { describe, it, expect } from 'vitest';
+import { detectBoardCorners, perspectiveCorrect, createPerspectiveDebugOverlay, applyPerspectiveDebug } from './perspective';
+
+describe('perspective', () => {
+  it('should detect board corners', () => {
+    const image = new ImageData(800, 600);
+    const corners = detectBoardCorners(image);
+    expect(corners).not.toBeNull();
+    expect(corners).toHaveLength(4);
+  });
+
+  it('should return rectified board', () => {
+    const image = new ImageData(200, 100);
+    const rectified = perspectiveCorrect(image, detectBoardCorners(image) ?? []);
+    expect(rectified).not.toBeNull();
+    expect(rectified?.width).toBeGreaterThan(0);
+    expect(rectified?.height).toBeGreaterThan(0);
+  });
+
+  it('should build debug overlay', () => {
+    const overlay = createPerspectiveDebugOverlay([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+      { x: 0, y: 100 },
+    ]);
+
+    expect(overlay.points).toHaveLength(4);
+    expect(overlay.color).toBe('#ff0000');
+  });
+
+  it('should apply debug overlay without throwing', () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 300;
+    canvas.height = 200;
+
+    expect(() => {
+      applyPerspectiveDebug(canvas, createPerspectiveDebugOverlay([
+        { x: 10, y: 10 },
+        { x: 100, y: 20 },
+        { x: 120, y: 100 },
+        { x: 20, y: 160 },
+      ]));
+    }).not.toThrow();
+  });
+});
